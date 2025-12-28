@@ -1,0 +1,947 @@
+import { useState, useEffect, useRef } from 'react';
+import { supabase } from '@/integrations/supabase/client';
+import { Profile, ChatMessage } from '@/types/panel';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/useAuth';
+import { Send, MessageCircle, ImagePlus, X, Users, Check, CheckCheck, Search, Reply, CornerDownRight, Pencil, Trash2, MoreVertical, Pin, PinOff } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { format, isToday, isYesterday, isSameDay, formatDistanceToNow } from 'date-fns';
+import { de } from 'date-fns/locale';
+import { getStatusColor } from '../StatusSelector';
+import { useTypingIndicator } from '@/hooks/useTypingIndicator';
+import { TypingIndicator } from '../TypingIndicator';
+import { EmojiPicker } from '../EmojiPicker';
+import { useNotificationSound } from '@/hooks/useNotificationSound';
+import { useUserPresence } from '@/hooks/useUserPresence';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { PushNotificationPrompt } from '../PushNotificationPrompt';
+
+type UserStatus = 'online' | 'away' | 'busy' | 'offline';
+
+interface ProfileWithStatus extends Profile {
+  status?: UserStatus;
+}
+
+interface ExtendedChatMessage extends ChatMessage {
+  image_url?: string | null;
+  updated_at?: string | null;
+  is_pinned?: boolean;
+}
+
+interface EmployeeWithChat extends ProfileWithStatus {
+  unreadCount: number;
+  lastMessage?: ExtendedChatMessage | null;
+}
+
+export default function AdminChatView() {
+  const [messages, setMessages] = useState<ExtendedChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [profiles, setProfiles] = useState<Record<string, ProfileWithStatus>>({});
+  const [employees, setEmployees] = useState<EmployeeWithChat[]>([]);
+  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [myProfile, setMyProfile] = useState<ProfileWithStatus | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<ExtendedChatMessage | null>(null);
+  const [editingMessage, setEditingMessage] = useState<ExtendedChatMessage | null>(null);
+  const [editText, setEditText] = useState('');
+  const [deleteMessageId, setDeleteMessageId] = useState<string | null>(null);
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { typingUsers, handleTyping, stopTyping } = useTypingIndicator({
+    channelName: selectedEmployee ? `chat-${[user?.id, selectedEmployee].sort().join('-')}` : 'admin-chat',
+    userId: user?.id,
+    userName: myProfile ? `${myProfile.first_name} ${myProfile.last_name}`.trim() : 'Admin',
+    recipientId: selectedEmployee,
+  });
+
+  const { playNotificationSound } = useNotificationSound();
+  const { showNotification } = usePushNotifications();
+
+  // Use presence-based status tracking
+  const { getUserStatus, getLastSeen } = useUserPresence({
+    userId: user?.id,
+    userName: myProfile ? `${myProfile.first_name} ${myProfile.last_name}`.trim() : 'Admin',
+    initialStatus: 'online',
+  });
+
+  useEffect(() => {
+    fetchProfiles();
+    fetchEmployees();
+    fetchMyProfile();
+
+    // Listen for profile status changes
+    const profileChannel = supabase
+      .channel('admin-chat-profile-updates')
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'profiles'
+      }, (payload) => {
+        const updated = payload.new as any;
+        setProfiles(prev => ({
+          ...prev,
+          [updated.user_id]: { ...prev[updated.user_id], ...updated, status: updated.status || 'offline' }
+        }));
+        // Also update employees list
+        setEmployees(prev => prev.map(emp => 
+          emp.user_id === updated.user_id 
+            ? { ...emp, ...updated, status: updated.status || 'offline' }
+            : emp
+        ));
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(profileChannel);
+    };
+  }, []);
+
+  const fetchMyProfile = async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
+    if (data) {
+      setMyProfile({ ...data, status: (data as any).status || 'offline' });
+    }
+  };
+
+  useEffect(() => {
+    if (user && selectedEmployee) {
+      fetchMessages();
+      markMessagesAsRead();
+
+      const channel = supabase
+        .channel('admin-chat-messages')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
+          const newMsg = payload.new as ExtendedChatMessage;
+          if (!newMsg.is_group_message && 
+              ((newMsg.sender_id === user.id && newMsg.recipient_id === selectedEmployee) ||
+               (newMsg.sender_id === selectedEmployee && newMsg.recipient_id === user.id))) {
+            setMessages(prev => [...prev, newMsg]);
+            scrollToBottom();
+            
+            // Play sound and show notification for incoming messages (not own messages)
+            if (newMsg.sender_id !== user.id) {
+              playNotificationSound();
+              
+              // Show push notification if app is in background
+              if (document.hidden) {
+                const senderProfile = profiles[newMsg.sender_id];
+                const senderName = senderProfile 
+                  ? `${senderProfile.first_name} ${senderProfile.last_name}`.trim()
+                  : 'Neue Nachricht';
+                showNotification(senderName, {
+                  body: newMsg.message?.substring(0, 100) || 'Hat ein Bild gesendet',
+                  data: { url: '/panel' }
+                });
+              }
+            }
+            
+            if (newMsg.recipient_id === user.id) {
+              markMessageAsRead(newMsg.id);
+            }
+          }
+          
+          // Update employee list with new message
+          if (!newMsg.is_group_message && (newMsg.sender_id !== user.id || newMsg.recipient_id !== selectedEmployee)) {
+            fetchEmployees();
+          }
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, (payload) => {
+          const updatedMsg = payload.new as ExtendedChatMessage;
+          setMessages(prev => prev.map(m => m.id === updatedMsg.id ? updatedMsg : m));
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [user, selectedEmployee]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    setTimeout(() => {
+      scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  const markMessageAsRead = async (messageId: string) => {
+    await supabase
+      .from('chat_messages')
+      .update({ read_at: new Date().toISOString() })
+      .eq('id', messageId);
+  };
+
+  const markMessagesAsRead = async () => {
+    if (!user || !selectedEmployee) return;
+    await supabase
+      .from('chat_messages')
+      .update({ read_at: new Date().toISOString() })
+      .eq('recipient_id', user.id)
+      .eq('sender_id', selectedEmployee)
+      .is('read_at', null)
+      .eq('is_group_message', false);
+  };
+
+  const fetchMessages = async () => {
+    if (!user || !selectedEmployee) return;
+    
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('*')
+      .eq('is_group_message', false)
+      .or(`and(sender_id.eq.${user.id},recipient_id.eq.${selectedEmployee}),and(sender_id.eq.${selectedEmployee},recipient_id.eq.${user.id})`)
+      .order('created_at', { ascending: true })
+      .limit(100);
+
+    if (data && !error) {
+      setMessages(data as ExtendedChatMessage[]);
+    }
+  };
+
+  const fetchProfiles = async () => {
+    const { data } = await supabase.from('profiles').select('*');
+    if (data) {
+      const profileMap: Record<string, ProfileWithStatus> = {};
+      (data as any[]).forEach((p) => {
+        profileMap[p.user_id] = { ...p, status: p.status || 'offline' };
+      });
+      setProfiles(profileMap);
+    }
+  };
+
+  const fetchEmployees = async () => {
+    if (!user) return;
+    
+    const { data: roles } = await supabase
+      .from('user_roles')
+      .select('user_id')
+      .eq('role', 'employee');
+    
+    if (roles) {
+      const employeeIds = roles.map(r => r.user_id);
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('user_id', employeeIds);
+      
+      if (profileData) {
+        // Fetch unread counts and last messages for each employee
+        const employeesWithChat: EmployeeWithChat[] = await Promise.all(
+          profileData.map(async (p) => {
+            // Get unread count
+            const { count } = await supabase
+              .from('chat_messages')
+              .select('*', { count: 'exact', head: true })
+              .eq('sender_id', p.user_id)
+              .eq('recipient_id', user.id)
+              .is('read_at', null)
+              .eq('is_group_message', false);
+            
+            // Get last message
+            const { data: lastMsgData } = await supabase
+              .from('chat_messages')
+              .select('*')
+              .eq('is_group_message', false)
+              .or(`and(sender_id.eq.${user.id},recipient_id.eq.${p.user_id}),and(sender_id.eq.${p.user_id},recipient_id.eq.${user.id})`)
+              .order('created_at', { ascending: false })
+              .limit(1);
+            
+            return {
+              ...p,
+              status: (p as any).status || 'offline',
+              unreadCount: count || 0,
+              lastMessage: lastMsgData?.[0] as ExtendedChatMessage || null
+            };
+          })
+        );
+        
+        // Sort: unread first, then by last message time
+        employeesWithChat.sort((a, b) => {
+          if (a.unreadCount > 0 && b.unreadCount === 0) return -1;
+          if (a.unreadCount === 0 && b.unreadCount > 0) return 1;
+          const aTime = a.lastMessage?.created_at || '0';
+          const bTime = b.lastMessage?.created_at || '0';
+          return bTime.localeCompare(aTime);
+        });
+        
+        setEmployees(employeesWithChat);
+      }
+    }
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast({ title: 'Fehler', description: 'Bild darf maximal 5MB groß sein.', variant: 'destructive' });
+        return;
+      }
+      setSelectedImage(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
+  };
+
+  const clearImage = () => {
+    setSelectedImage(null);
+    setImagePreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const uploadImage = async (): Promise<string | null> => {
+    if (!selectedImage || !user) return null;
+
+    const fileExt = selectedImage.name.split('.').pop();
+    const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+
+    const { error } = await supabase.storage
+      .from('chat-images')
+      .upload(fileName, selectedImage);
+
+    if (error) {
+      toast({ title: 'Fehler', description: 'Bild konnte nicht hochgeladen werden.', variant: 'destructive' });
+      return null;
+    }
+
+    const { data } = supabase.storage.from('chat-images').getPublicUrl(fileName);
+    return data.publicUrl;
+  };
+
+  const handleSendMessage = async () => {
+    if ((!newMessage.trim() && !selectedImage) || !user || !selectedEmployee) return;
+
+    setUploading(true);
+    let imageUrl: string | null = null;
+
+    if (selectedImage) {
+      imageUrl = await uploadImage();
+      if (!imageUrl && selectedImage) {
+        setUploading(false);
+        return;
+      }
+    }
+
+    // Build message with quote prefix if replying
+    let messageContent = newMessage.trim() || '';
+    if (replyingTo) {
+      const replyToName = profiles[replyingTo.sender_id]
+        ? `${profiles[replyingTo.sender_id].first_name} ${profiles[replyingTo.sender_id].last_name}`
+        : 'Unbekannt';
+      const quotedText = replyingTo.message?.substring(0, 100) || '[Bild]';
+      messageContent = `> ${replyToName}: ${quotedText}${replyingTo.message && replyingTo.message.length > 100 ? '...' : ''}\n\n${messageContent}`;
+    }
+
+    const { error } = await supabase.from('chat_messages').insert({
+      sender_id: user.id,
+      recipient_id: selectedEmployee,
+      message: messageContent,
+      is_group_message: false,
+      image_url: imageUrl
+    });
+
+    setUploading(false);
+    stopTyping();
+
+    if (error) {
+      toast({ title: 'Fehler', description: 'Nachricht konnte nicht gesendet werden.', variant: 'destructive' });
+    } else {
+      setNewMessage('');
+      setReplyingTo(null);
+      clearImage();
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  const handleEditMessage = async () => {
+    if (!editingMessage || !editText.trim()) return;
+    
+    const { error } = await supabase
+      .from('chat_messages')
+      .update({ 
+        message: editText.trim(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', editingMessage.id)
+      .eq('sender_id', user?.id);
+    
+    if (error) {
+      toast({ title: 'Fehler', description: 'Nachricht konnte nicht bearbeitet werden.', variant: 'destructive' });
+    } else {
+      setMessages(prev => prev.map(m => m.id === editingMessage.id ? { ...m, message: editText.trim(), updated_at: new Date().toISOString() } : m));
+      setEditingMessage(null);
+      setEditText('');
+    }
+  };
+
+  const handleDeleteMessage = async () => {
+    if (!deleteMessageId) return;
+    
+    const { error } = await supabase
+      .from('chat_messages')
+      .delete()
+      .eq('id', deleteMessageId)
+      .eq('sender_id', user?.id);
+    
+    if (error) {
+      toast({ title: 'Fehler', description: 'Nachricht konnte nicht gelöscht werden.', variant: 'destructive' });
+    } else {
+      setMessages(prev => prev.filter(m => m.id !== deleteMessageId));
+      toast({ title: 'Erfolg', description: 'Nachricht gelöscht.' });
+    }
+    setDeleteMessageId(null);
+  };
+
+  const handlePinMessage = async (msgId: string, isPinned: boolean) => {
+    const { error } = await supabase
+      .from('chat_messages')
+      .update({ is_pinned: !isPinned })
+      .eq('id', msgId);
+    
+    if (error) {
+      toast({ title: 'Fehler', description: 'Nachricht konnte nicht gepinnt werden.', variant: 'destructive' });
+    } else {
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, is_pinned: !isPinned } : m));
+      toast({ 
+        title: !isPinned ? 'Nachricht gepinnt' : 'Nachricht entpinnt', 
+        description: !isPinned ? 'Die Nachricht wurde als wichtig markiert.' : 'Die Markierung wurde entfernt.'
+      });
+    }
+  };
+
+  const startEditing = (msg: ExtendedChatMessage) => {
+    setEditingMessage(msg);
+    setEditText(msg.message || '');
+  };
+
+  const cancelEditing = () => {
+    setEditingMessage(null);
+    setEditText('');
+  };
+
+  const getProfileAvatar = (userId: string) => {
+    const p = profiles[userId];
+    if (!p?.avatar_url) return null;
+    const { data } = supabase.storage.from('avatars').getPublicUrl(p.avatar_url);
+    return data.publicUrl;
+  };
+
+  // Get status using presence hook for accurate real-time status
+  const getStatus = (userId: string): UserStatus => {
+    // First check presence (more accurate), then fallback to profile status
+    const presenceStatus = getUserStatus(userId);
+    if (presenceStatus !== 'offline') {
+      return presenceStatus;
+    }
+    return profiles[userId]?.status || 'offline';
+  };
+
+  // Filter messages based on search query
+  const filteredMessages = searchQuery.trim()
+    ? messages.filter(msg => 
+        msg.message?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        profiles[msg.sender_id]?.first_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        profiles[msg.sender_id]?.last_name?.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : messages;
+
+  // Helper to format date labels
+  const formatDateLabel = (date: Date) => {
+    if (isToday(date)) return 'Heute';
+    if (isYesterday(date)) return 'Gestern';
+    return format(date, 'EEEE, d. MMMM yyyy', { locale: de });
+  };
+
+  // Check if message is edited
+  const isEdited = (msg: ExtendedChatMessage) => {
+    return msg.updated_at && msg.updated_at !== msg.created_at;
+  };
+
+  const getUnreadCount = async (employeeId: string): Promise<number> => {
+    if (!user) return 0;
+    const { count } = await supabase
+      .from('chat_messages')
+      .select('*', { count: 'exact', head: true })
+      .eq('sender_id', employeeId)
+      .eq('recipient_id', user.id)
+      .is('read_at', null);
+    return count || 0;
+  };
+
+  return (
+    <div className="h-[calc(100vh-16rem)]">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 h-full">
+        {/* Employee List */}
+        <Card className="md:col-span-1 shadow-lg">
+          <CardHeader className="pb-3 border-b">
+            <div className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-primary" />
+              <h2 className="font-semibold text-lg">Mitarbeiter</h2>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <ScrollArea className="h-[calc(100vh-22rem)]">
+              {employees.map((emp) => {
+                const empStatus = getStatus(emp.user_id);
+                const lastMsgPreview = emp.lastMessage?.message 
+                  ? (emp.lastMessage.message.length > 30 
+                    ? emp.lastMessage.message.substring(0, 30) + '...' 
+                    : emp.lastMessage.message)
+                  : emp.lastMessage?.image_url ? '📷 Bild' : null;
+                const lastMsgTime = emp.lastMessage?.created_at 
+                  ? formatDistanceToNow(new Date(emp.lastMessage.created_at), { addSuffix: true, locale: de })
+                  : null;
+                
+                return (
+                  <button
+                    key={emp.user_id}
+                    onClick={() => setSelectedEmployee(emp.user_id)}
+                    className={`w-full flex items-center gap-3 p-3 hover:bg-muted/50 transition-colors border-b ${
+                      selectedEmployee === emp.user_id ? 'bg-muted' : ''
+                    } ${emp.unreadCount > 0 ? 'bg-primary/5' : ''}`}
+                  >
+                    <div className="relative shrink-0">
+                      <Avatar className="h-11 w-11">
+                        <AvatarImage src={getProfileAvatar(emp.user_id) || ''} />
+                        <AvatarFallback className="bg-primary/10 text-primary text-sm font-medium">
+                          {emp.first_name?.[0]}{emp.last_name?.[0]}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span 
+                        className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-background ${getStatusColor(empStatus)}`}
+                      />
+                      {emp.unreadCount > 0 && (
+                        <span className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold shadow-sm">
+                          {emp.unreadCount > 9 ? '9+' : emp.unreadCount}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className={`font-medium text-sm truncate ${emp.unreadCount > 0 ? 'text-foreground' : ''}`}>
+                          {emp.first_name} {emp.last_name}
+                        </p>
+                        {lastMsgTime && (
+                          <span className="text-[10px] text-muted-foreground shrink-0">{lastMsgTime}</span>
+                        )}
+                      </div>
+                      {lastMsgPreview ? (
+                        <p className={`text-xs truncate mt-0.5 ${emp.unreadCount > 0 ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
+                          {emp.lastMessage?.sender_id === user?.id ? 'Du: ' : ''}{lastMsgPreview}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground/60 mt-0.5">
+                          {empStatus === 'offline' && getLastSeen(emp.user_id) ? (
+                            `Zuletzt: ${formatDistanceToNow(new Date(getLastSeen(emp.user_id)!), { addSuffix: false, locale: de })}`
+                          ) : (
+                            'Keine Nachrichten'
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        {/* Chat Area */}
+        <Card className="md:col-span-3 shadow-lg flex flex-col">
+          <CardHeader className="pb-3 border-b space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="h-5 w-5 text-primary" />
+                <h2 className="font-semibold text-lg">
+                  {selectedEmployee ? `Chat mit ${profiles[selectedEmployee]?.first_name || ''} ${profiles[selectedEmployee]?.last_name || ''}` : 'Wählen Sie einen Mitarbeiter'}
+                </h2>
+              </div>
+              {selectedEmployee && (
+                <div className="flex items-center gap-1">
+                  <PushNotificationPrompt />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setIsSearching(!isSearching)}
+                    className={isSearching ? 'bg-muted' : ''}
+                    title="Nachrichten durchsuchen"
+                  >
+                    <Search className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+            </div>
+            {isSearching && selectedEmployee && (
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Nachrichten durchsuchen..."
+                  className="pl-9"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            )}
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col p-0 overflow-hidden">
+            {!selectedEmployee ? (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <div className="text-center">
+                  <Users className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>Wählen Sie einen Mitarbeiter aus der Liste</p>
+                </div>
+              </div>
+            ) : (
+              <>
+                <ScrollArea className="flex-1 p-4">
+                  <div className="space-y-4">
+                    {filteredMessages.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                        <MessageCircle className="h-12 w-12 mb-4 opacity-50" />
+                        <p>{searchQuery ? 'Keine Nachrichten gefunden.' : 'Noch keine Nachrichten.'}</p>
+                      </div>
+                    ) : (
+                      filteredMessages.map((msg, index) => {
+                        const isOwn = msg.sender_id === user?.id;
+                        const senderProfile = profiles[msg.sender_id];
+                        const senderStatus = getStatus(msg.sender_id);
+                        const senderName = senderProfile 
+                          ? `${senderProfile.first_name} ${senderProfile.last_name}`
+                          : 'Unbekannt';
+                        
+                        // Date separator logic
+                        const msgDate = new Date(msg.created_at);
+                        const prevMsg = index > 0 ? filteredMessages[index - 1] : null;
+                        const showDateSeparator = !prevMsg || !isSameDay(msgDate, new Date(prevMsg.created_at));
+                        
+                        return (
+                          <div key={msg.id}>
+                            {/* Date separator */}
+                            {showDateSeparator && (
+                              <div className="flex items-center justify-center my-4">
+                                <div className="flex-1 h-px bg-border" />
+                                <span className="px-4 text-xs font-medium text-muted-foreground bg-background">
+                                  {formatDateLabel(msgDate)}
+                                </span>
+                                <div className="flex-1 h-px bg-border" />
+                              </div>
+                            )}
+                            <div className={`flex gap-2 ${isOwn ? 'flex-row-reverse' : ''}`}>
+                              <div className="relative shrink-0 self-end">
+                                <Avatar className="h-8 w-8">
+                                  <AvatarImage src={getProfileAvatar(msg.sender_id) || ''} />
+                                  <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                                    {senderProfile?.first_name?.[0]}{senderProfile?.last_name?.[0]}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span 
+                                  className={`absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-background ${getStatusColor(senderStatus)}`}
+                                />
+                              </div>
+                              <div className={`max-w-[70%] flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                                <div className={`flex items-center gap-2 mb-0.5 ${isOwn ? 'flex-row-reverse' : ''}`}>
+                                  <span className="text-xs font-medium">
+                                    {isOwn ? 'Du' : senderName}
+                                  </span>
+                                  <div className={`flex items-center gap-1 ${isOwn ? 'flex-row-reverse' : ''}`}>
+                                    <span className="text-xs text-muted-foreground">
+                                      {format(new Date(msg.created_at), 'HH:mm', { locale: de })}
+                                    </span>
+                                    {isEdited(msg) && (
+                                      <span className="text-[10px] text-muted-foreground/70 italic">(bearbeitet)</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="group relative">
+                                  {editingMessage?.id === msg.id ? (
+                                    <div className="flex flex-col gap-2 min-w-[280px] bg-background border rounded-xl p-3 shadow-lg">
+                                      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                                        <Pencil className="h-3 w-3" />
+                                        <span>Nachricht bearbeiten</span>
+                                      </div>
+                                      <Input
+                                        value={editText}
+                                        onChange={(e) => setEditText(e.target.value)}
+                                        className="flex-1"
+                                        autoFocus
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') handleEditMessage();
+                                          if (e.key === 'Escape') cancelEditing();
+                                        }}
+                                      />
+                                      <div className="flex gap-2 justify-end">
+                                        <Button size="sm" variant="ghost" onClick={cancelEditing} className="h-8">
+                                          Abbrechen
+                                        </Button>
+                                        <Button size="sm" onClick={handleEditMessage} className="h-8">
+                                          <Check className="h-4 w-4 mr-1" />
+                                          Speichern
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div
+                                        className={`p-3 rounded-2xl ${
+                                          isOwn
+                                            ? 'bg-primary text-primary-foreground rounded-br-sm'
+                                            : 'bg-muted rounded-bl-sm'
+                                        } ${msg.is_pinned ? 'ring-2 ring-amber-400/50' : ''}`}
+                                      >
+                                        {/* Pin indicator */}
+                                        {msg.is_pinned && (
+                                          <div className={`flex items-center gap-1 mb-1.5 ${isOwn ? 'text-primary-foreground/70' : 'text-amber-600'}`}>
+                                            <Pin className="h-3 w-3" />
+                                            <span className="text-[10px] font-medium">Gepinnt</span>
+                                          </div>
+                                        )}
+                                        {/* Quote preview if message starts with > */}
+                                        {msg.message?.startsWith('>') && (
+                                          <div className={`flex items-start gap-1 mb-2 pb-2 border-b ${isOwn ? 'border-primary-foreground/20' : 'border-border'}`}>
+                                            <CornerDownRight className="h-3 w-3 mt-0.5 opacity-60 shrink-0" />
+                                            <p className={`text-xs italic opacity-70 line-clamp-2 ${isOwn ? 'text-primary-foreground' : 'text-foreground'}`}>
+                                              {msg.message.split('\n\n')[0].substring(2)}
+                                            </p>
+                                          </div>
+                                        )}
+                                        {msg.image_url && (
+                                          <img 
+                                            src={msg.image_url} 
+                                            alt="Bild" 
+                                            className="max-w-full rounded-lg mb-2 max-h-64 object-contain cursor-pointer"
+                                            onClick={() => window.open(msg.image_url!, '_blank')}
+                                          />
+                                        )}
+                                        {msg.message && (
+                                          <p className="text-sm whitespace-pre-wrap break-words">
+                                            {msg.message.startsWith('>') ? msg.message.split('\n\n').slice(1).join('\n\n') : msg.message}
+                                          </p>
+                                        )}
+                                      </div>
+                                    {/* Action buttons */}
+                                    <div className={`absolute top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 ${
+                                      isOwn ? '-left-24' : '-right-24'
+                                    }`}>
+                                      <button
+                                        onClick={() => handlePinMessage(msg.id, !!msg.is_pinned)}
+                                        className={`p-1.5 rounded-full bg-background border shadow-sm hover:bg-muted ${msg.is_pinned ? 'text-amber-600' : ''}`}
+                                        title={msg.is_pinned ? 'Entpinnen' : 'Pinnen'}
+                                      >
+                                        {msg.is_pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                                      </button>
+                                      <button
+                                        onClick={() => setReplyingTo(msg)}
+                                        className="p-1.5 rounded-full bg-background border shadow-sm hover:bg-muted"
+                                        title="Antworten"
+                                      >
+                                        <Reply className="h-3.5 w-3.5" />
+                                      </button>
+                                      {isOwn && (
+                                        <DropdownMenu>
+                                          <DropdownMenuTrigger asChild>
+                                            <button
+                                              className="p-1.5 rounded-full bg-background border shadow-sm hover:bg-muted"
+                                              title="Mehr"
+                                            >
+                                              <MoreVertical className="h-3.5 w-3.5" />
+                                            </button>
+                                          </DropdownMenuTrigger>
+                                          <DropdownMenuContent align={isOwn ? 'start' : 'end'}>
+                                            <DropdownMenuItem onClick={() => startEditing(msg)}>
+                                              <Pencil className="h-4 w-4 mr-2" />
+                                              Bearbeiten
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem 
+                                              onClick={() => setDeleteMessageId(msg.id)}
+                                              className="text-destructive focus:text-destructive"
+                                            >
+                                              <Trash2 className="h-4 w-4 mr-2" />
+                                              Löschen
+                                            </DropdownMenuItem>
+                                          </DropdownMenuContent>
+                                        </DropdownMenu>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                              {/* Read receipt for own messages */}
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  {msg.read_at ? (
+                                    <div className="flex items-center gap-0.5 text-primary" title={`Gelesen um ${format(new Date(msg.read_at), 'HH:mm', { locale: de })}`}>
+                                      <CheckCheck className="h-3.5 w-3.5" />
+                                      <span className="text-[10px] text-muted-foreground">Gelesen</span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-0.5 text-muted-foreground" title="Zugestellt">
+                                      <Check className="h-3.5 w-3.5" />
+                                      <span className="text-[10px]">Zugestellt</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                    <div ref={scrollRef} />
+                  </div>
+                </ScrollArea>
+                
+                {/* Typing indicator */}
+                <TypingIndicator typingUsers={typingUsers} />
+                
+                <div className="p-4 border-t bg-background">
+                  {/* Reply preview */}
+                  {replyingTo && (
+                    <div className="flex items-center gap-2 mb-2 p-2 rounded-lg bg-muted/50 border-l-2 border-primary">
+                      <Reply className="h-4 w-4 text-primary shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-primary">
+                          Antwort an {profiles[replyingTo.sender_id]?.first_name || 'Unbekannt'}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {replyingTo.message?.substring(0, 50) || '[Bild]'}{replyingTo.message && replyingTo.message.length > 50 ? '...' : ''}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setReplyingTo(null)}
+                        className="p-1 rounded-full hover:bg-muted"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                  {imagePreview && (
+                    <div className="relative inline-block mb-2">
+                      <img 
+                        src={imagePreview} 
+                        alt="Preview" 
+                        className="h-20 w-20 object-cover rounded-lg"
+                      />
+                      <button
+                        onClick={clearImage}
+                        className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleImageSelect}
+                      accept="image/*"
+                      className="hidden"
+                    />
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => fileInputRef.current?.click()}
+                      title="Bild hochladen"
+                    >
+                      <ImagePlus className="h-5 w-5" />
+                    </Button>
+                    <EmojiPicker 
+                      onEmojiSelect={(emoji) => setNewMessage(prev => prev + emoji)}
+                      disabled={uploading}
+                    />
+                    <Input
+                      value={newMessage}
+                      onChange={(e) => {
+                        setNewMessage(e.target.value);
+                        handleTyping();
+                      }}
+                      onKeyPress={handleKeyPress}
+                      onBlur={stopTyping}
+                      placeholder="Nachricht schreiben..."
+                      className="flex-1"
+                    />
+                    <Button 
+                      onClick={handleSendMessage} 
+                      disabled={(!newMessage.trim() && !selectedImage) || uploading} 
+                      size="icon"
+                    >
+                      <Send className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={!!deleteMessageId} onOpenChange={() => setDeleteMessageId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Nachricht löschen?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Diese Aktion kann nicht rückgängig gemacht werden. Die Nachricht wird dauerhaft gelöscht.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteMessage} className="bg-destructive hover:bg-destructive/90">
+              Löschen
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
