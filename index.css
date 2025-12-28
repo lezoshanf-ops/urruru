@@ -1,0 +1,298 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
+@layer base {
+  :root {
+    /* Core colors */
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    
+    /* Card & Popover */
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    
+    /* Primary - Brand Red (like logo) */
+    --primary: 0 72% 51%;
+    --primary-foreground: 0 0% 100%;
+    
+    /* Secondary */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 11%;
+    
+    /* Muted */
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    
+    /* Accent */
+    --accent: 220 14% 96%;
+    --accent-foreground: 222 47% 11%;
+    
+    /* Destructive - Red for errors/warnings */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    
+    /* Accent Red - for urgent/high priority only */
+    --accent-red: 0 80% 45%;
+    --accent-red-light: 0 60% 96%;
+    --accent-red-dark: 0 80% 35%;
+    --accent-red-muted: 0 50% 55%;
+    
+    /* Border & Input & Ring */
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 0 72% 51%;
+    
+    /* Sidebar - Dark theme neutral */
+    --sidebar: 222 47% 11%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 17%;
+    --sidebar-accent: 0 50% 25%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    
+    /* Status colors */
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+    
+    /* Task status colors */
+    --status-pending: 38 92% 50%;
+    --status-assigned: 199 89% 48%;
+    --status-in-progress: 262 83% 58%;
+    --status-sms-requested: 280 67% 55%;
+    --status-completed: 142 76% 36%;
+    --status-cancelled: 220 9% 46%;
+    
+    /* User status colors */
+    --status-online: 142 76% 36%;
+    --status-away: 38 92% 50%;
+    --status-busy: 0 84% 60%;
+    --status-offline: 220 9% 46%;
+    
+    /* Employee panel accent - Brand red */
+    --employee-accent: 0 72% 51%;
+    --employee-accent-light: 0 60% 96%;
+    --employee-accent-foreground: 0 0% 100%;
+    
+    /* Custom gradient tokens */
+    --gradient-primary: linear-gradient(135deg, hsl(0, 72%, 51%) 0%, hsl(0, 72%, 41%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(222, 47%, 11%) 0%, hsl(217, 33%, 17%) 100%);
+    --gradient-card: linear-gradient(180deg, hsl(0, 0%, 100%) 0%, hsl(220, 14%, 98%) 100%);
+    --gradient-employee: linear-gradient(135deg, hsl(0, 72%, 51%) 0%, hsl(0, 72%, 41%) 100%);
+    
+    /* Shadow tokens */
+    --shadow-soft: 0 2px 15px -3px rgba(0, 0, 0, 0.07), 0 10px 20px -2px rgba(0, 0, 0, 0.04);
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+    --shadow-glow: 0 0 20px rgba(220, 38, 38, 0.3);
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    /* Core colors */
+    --background: 222 47% 8%;
+    --foreground: 210 40% 98%;
+    
+    /* Card & Popover */
+    --card: 222 47% 11%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 11%;
+    --popover-foreground: 210 40% 98%;
+    
+    /* Primary - Brand Red (like logo) */
+    --primary: 0 72% 55%;
+    --primary-foreground: 0 0% 100%;
+    
+    /* Secondary */
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 40% 98%;
+    
+    /* Muted */
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    
+    /* Accent */
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    
+    /* Destructive */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    
+    /* Accent Red - for urgent/high priority only */
+    --accent-red: 0 80% 55%;
+    --accent-red-light: 0 50% 20%;
+    --accent-red-dark: 0 80% 40%;
+    --accent-red-muted: 0 60% 60%;
+    
+    /* Border & Input & Ring */
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 0 72% 55%;
+    
+    /* Sidebar - Dark theme neutral */
+    --sidebar: 222 47% 8%;
+    --sidebar-foreground: 210 40% 98%;
+    --sidebar-border: 217 33% 17%;
+    --sidebar-accent: 0 50% 25%;
+    --sidebar-accent-foreground: 210 40% 98%;
+    
+    /* Status colors */
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+    
+    /* Task status colors */
+    --status-pending: 38 92% 50%;
+    --status-assigned: 199 89% 48%;
+    --status-in-progress: 262 83% 58%;
+    --status-sms-requested: 280 67% 55%;
+    --status-completed: 142 76% 36%;
+    --status-cancelled: 215 20% 65%;
+    
+    /* User status colors */
+    --status-online: 142 76% 36%;
+    --status-away: 38 92% 50%;
+    --status-busy: 0 84% 60%;
+    --status-offline: 215 20% 65%;
+    
+    /* Employee panel accent - Brand red */
+    --employee-accent: 0 72% 55%;
+    --employee-accent-light: 0 50% 20%;
+    --employee-accent-foreground: 0 0% 100%;
+    
+    /* Custom gradient tokens */
+    --gradient-primary: linear-gradient(135deg, hsl(0, 72%, 55%) 0%, hsl(0, 72%, 45%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(222, 47%, 11%) 0%, hsl(217, 33%, 17%) 100%);
+    --gradient-card: linear-gradient(180deg, hsl(222, 47%, 11%) 0%, hsl(217, 33%, 17%) 100%);
+    --gradient-employee: linear-gradient(135deg, hsl(0, 72%, 55%) 0%, hsl(0, 72%, 45%) 100%);
+    
+    /* Shadow tokens */
+    --shadow-soft: 0 2px 15px -3px rgba(0, 0, 0, 0.3), 0 10px 20px -2px rgba(0, 0, 0, 0.2);
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.2);
+    --shadow-glow: 0 0 20px rgba(220, 38, 38, 0.4);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+}
+
+@layer utilities {
+  .gradient-hero {
+    background: var(--gradient-hero);
+  }
+  
+  .gradient-card {
+    background: var(--gradient-card);
+  }
+
+  .gradient-glass {
+    background: var(--gradient-glass);
+  }
+  
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
+  }
+  
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+  
+  .shadow-elevated {
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .shadow-neon {
+    box-shadow: var(--shadow-neon);
+  }
+
+  /* Glassmorphism */
+  .glass {
+    @apply bg-card/60 backdrop-blur-xl border border-border/50;
+  }
+
+  .glass-card {
+    @apply bg-card/70 backdrop-blur-lg border border-border/40 shadow-card;
+  }
+
+  .glass-panel {
+    @apply bg-card/80 backdrop-blur-md border border-border/30;
+  }
+
+  /* Neon glow effects */
+  .neon-border {
+    @apply border border-primary/30;
+    box-shadow: inset 0 0 20px hsl(var(--primary) / 0.05), 0 0 20px hsl(var(--primary) / 0.1);
+  }
+
+  .neon-text {
+    text-shadow: 0 0 10px hsl(var(--primary) / 0.5), 0 0 20px hsl(var(--primary) / 0.3);
+  }
+
+  .animate-fade-up {
+    animation: fadeUp 0.6s ease-out forwards;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.4s ease-out forwards;
+  }
+
+  .animate-glow {
+    animation: glow 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes fadeUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes glow {
+    from {
+      box-shadow: 0 0 10px hsl(var(--primary) / 0.2), 0 0 20px hsl(var(--primary) / 0.1);
+    }
+    to {
+      box-shadow: 0 0 20px hsl(var(--primary) / 0.4), 0 0 40px hsl(var(--primary) / 0.2);
+    }
+  }
+}
